@@ -2,6 +2,7 @@ package probe
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"time"
 )
@@ -37,10 +38,14 @@ func (e *ExecProbe) Probe(ctx context.Context) Result {
 	duration := time.Since(start)
 
 	if err != nil {
+		msg := err.Error()
+		if ctx.Err() == context.DeadlineExceeded {
+			msg = fmt.Sprintf("command timed out after %s", e.timeout)
+		}
 		return Result{
 			Status:   StatusUnhealthy,
 			Duration: duration,
-			Message:  err.Error(),
+			Message:  msg,
 		}
 	}
 
