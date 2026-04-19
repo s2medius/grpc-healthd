@@ -36,12 +36,11 @@ func (d *DNSProbe) Probe() Result {
 	addrs, err := d.resolver.LookupHost(ctx, d.host)
 	duration := time.Since(start)
 
-	if err != nil || len(addrs) == 0 {
-		msg := fmt.Sprintf("dns lookup failed for %s", d.host)
-		if err != nil {
-			msg = err.Error()
-		}
-		return Result{Status: StatusUnhealthy, Duration: duration, Message: msg}
+	if err != nil {
+		return Result{Status: StatusUnhealthy, Duration: duration, Message: err.Error()}
+	}
+	if len(addrs) == 0 {
+		return Result{Status: StatusUnhealthy, Duration: duration, Message: fmt.Sprintf("dns lookup returned no addresses for %s", d.host)}
 	}
 
 	return Result{
