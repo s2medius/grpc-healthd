@@ -7,71 +7,60 @@ import (
 	"time"
 )
 
-// Status represents the result of a probe check.
-type Status int
+// Status represents the health state of a service.
+type Status string
 
 const (
-	StatusUnknown Status = iota
-	StatusHealthy
-	StatusUnhealthy
+	StatusHealthy   Status = "healthy"
+	StatusUnhealthy Status = "unhealthy"
+	StatusUnknown   Status = "unknown"
 )
 
-func (s Status) String() string {
-	switch s {
-	case StatusHealthy:
-		return "healthy"
-	case StatusUnhealthy:
-		return "unhealthy"
-	default:
-		return "unknown"
-	}
-}
+func (s Status) String() string { return string(s) }
 
 // Result holds the outcome of a single probe execution.
 type Result struct {
-	Name    string
-	Status  Status
-	Latency time.Duration
-	Err     error
+	Status   Status
+	Duration time.Duration
+	Err      error
 }
 
-// Probe defines the interface for health check probes.
+// Probe is the interface implemented by all probe types.
 type Probe interface {
-	Name() string
 	Check(ctx context.Context) Result
 }
 
-// TCPProbe checks connectivity to a TCP endpoint.
+// TCPProbe checks health by opening a TCP connection.
 type TCPProbe struct {
-	name    string
-	address string
-	timeout time.Duration
+	Address string
+	Timeout time.Duration
 }
 
-// NewTCPProbe creates a new TCP probe.
-func NewTCPProbe(name, address string, timeout time.Duration) *TCPProbe {
+const defaultTCPTimeout = 5 * time.Second
+
+// NewTCPProbe creates a TCPProbe, applying a default timeout if zero.
+func NewTCPProbe(address string, timeout time.Duration) *TCPProbe {
 	if timeout == 0 {
-		timeout = 5 * time.Second
+		timeout = defaultTCPTimeout
 	}
-	return &TCPProbe{name: name, address: address, timeout: timeout}
+	return &TCPProbe{Address: address, Timeout: timeout}
 }
 
-func (p *TCPProbe) Name() string { return p.name }
-
+// Check attempts a TCP dial and returns the result.
 func (p *TCPProbe) Check(ctx context.Context) Result {
 	start := time.Now()
-	result := Result{Name: p.name}
+	dialCtx, cancel := context.WithTimeout(ctx, p.Timeout)
+	defer cancel()
 
-	dialer := &net.Dialer{Timeout: p.timeout}
-	conn, err := dialer.DialContext(ctx, "tcp", p.address)
-	result.Latency = time.Since(start)
-
+	conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", p.Address)
+	duration := time.Since(start)
 	if err != nil {
-		result.Status = StatusUnhealthy
-		result.Err = fmt.Errorf("tcp dial %s: %w", p.address, err)
-		return result
+		return Result{
+			Status:   StatusUnhealthy,
+			Duration: duration,
+			Err:      fmt.Errorf("tcp probe failed: %w", err),
+		}
 	}
 	conn.Close()
-	result.Status = StatusHealthy
-	return result
+	return Result{Status: StatusHealthy, Duration: duration}
 }
