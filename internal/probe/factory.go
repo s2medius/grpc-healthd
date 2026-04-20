@@ -2,40 +2,36 @@ package probe
 
 import (
 	"fmt"
-	"time"
 
-	"github.com/yourorg/grpc-healthd/internal/config"
+	"github.com/yourusername/grpc-healthd/internal/config"
 )
 
 // Probe is the interface implemented by all probe types.
-type Prober interface {
-	Probe() Result
+type Probe interface {
+	Run(ctx interface{ Done() <-chan struct{} }) Status
 }
 
-// FromConfig constructs a Prober from a ProbeConfig.
-func FromConfig(cfg config.ProbeConfig) (Prober, error) {
-	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
-	if timeout == 0 {
-		timeout = 5 * time.Second
-	}
-
+// FromConfig constructs a Probe from the given ProbeConfig.
+// Returns an error if the probe type is unknown.
+func FromConfig(cfg config.ProbeConfig) (Probe, error) {
 	switch cfg.Type {
 	case "tcp":
-		return NewTCPProbe(cfg.Address, timeout), nil
-	case "http":
-		return NewHTTPProbe(cfg.Address, timeout), nil
+		return NewTCPProbe(cfg), nil
+	case "http", "https":
+		return NewHTTPProbe(cfg), nil
 	case "dns":
-		return NewDNSProbe(cfg.Address, timeout), nil
+		return NewDNSProbe(cfg), nil
 	case "exec":
-		if len(cfg.Command) == 0 {
-			return nil, fmt.Errorf("exec probe %q: command must not be empty", cfg.Name)
-		}
-		return NewExecProbe(cfg.Command[0], cfg.Command[1:], timeout), nil
+		return NewExecProbe(cfg), nil
 	case "grpc":
-		return NewGRPCProbe(cfg.Address, cfg.Service, timeout), nil
+		return NewGRPCProbe(cfg), nil
 	case "tls":
-		return NewTLSProbe(cfg.Address, timeout), nil
+		return NewTLSProbe(cfg), nil
+	case "icmp":
+		return NewICMPProbe(cfg), nil
+	case "redis":
+		return NewRedisProbe(cfg), nil
 	default:
-		return nil, fmt.Errorf("unknown probe type %q for probe %q", cfg.Type, cfg.Name)
+		return nil, fmt.Errorf("unknown probe type: %q", cfg.Type)
 	}
 }
