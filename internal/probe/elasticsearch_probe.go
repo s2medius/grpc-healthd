@@ -1,35 +1,28 @@
 package probe
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
-
-	"github.com/your-org/grpc-healthd/internal/metrics"
 )
 
-// ElasticsearchProbe checks the health of an Elasticsearch cluster by querying
-// the /_cluster/health endpoint and verifying the cluster status is not "red".
+// ElasticsearchProbe checks Elasticsearch cluster health via the REST API.
 type ElasticsearchProbe struct {
 	address string
 	timeout time.Duration
 	client  *http.Client
 }
 
-// elasticsearchClusterHealth represents the relevant fields from the
-// Elasticsearch /_cluster/health API response.
-type elasticsearchClusterHealth struct {
+type esClusterHealth struct {
 	Status string `json:"status"`
 }
 
-// NewElasticsearchProbe creates a new ElasticsearchProbe targeting the given
-// address (e.g. "http://localhost:9200"). If timeout is zero, DefaultTimeout
-// is used.
-func NewElasticsearchProbe(address string, timeout time.Duration) *ElasticsearchProbe {
-	if timeout == 0 {
-		timeout = DefaultTimeout
+// NewElasticsearchProbe creates a new ElasticsearchProbe.
+// If timeout is zero, a default of 5 seconds is used.
+func NewElasticsearchProbe(address string, timeout time.Duration) Probe {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
 	}
 	return &ElasticsearchProbe{
 		address: address,
@@ -38,66 +31,45 @@ func NewElasticsearchProbe(address string, timeout time.Duration) *Elasticsearch
 	}
 }
 
-// Probe performs the Elasticsearch cluster health check. It returns a healthy
-// Status when the cluster status is "green" or "yellow", and unhealthy when
-// the status is "red" or the endpoint is unreachable.
-func (e *ElasticsearchProbe) Probe(ctx context.Context) Status {
+// Check performs an HTTP GET to the Elasticsearch /_cluster/health endpoint
+// and returns healthy if the cluster status is "green" or "yellow".
+func (e *ElasticsearchProbe) Check() Result {
 	start := time.Now()
+	url := fmt.Sprintf("http://%s/_cluster/health", e.address)
 
-	url := fmt.Sprintf("%s/_cluster/health", e.address)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	resp, err := e.client.Get(url)
 	if err != nil {
-		duration := time.Since(start).Seconds()
-		metrics.RecordProbe("elasticsearch", e.address, false, duration)
-		return Status{
-			Healthy: false,
-			Message: fmt.Sprintf("failed to build request: %v", err),
-		}
-	}
-
-	resp, err := e.client.Do(req)
-	if err != nil {
-		duration := time.Since(start).Seconds()
-		metrics.RecordProbe("elasticsearch", e.address, false, duration)
-		return Status{
-			Healthy: false,
-			Message: fmt.Sprintf("connection failed: %v", err),
+		return Result{
+			Healthy:  false,
+			Message:  fmt.Sprintf("elasticsearch connection failed: %v", err),
+			Duration: time.Since(start),
 		}
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		duration := time.Since(start).Seconds()
-		metrics.RecordProbe("elasticsearch", e.address, false, duration)
-		return Status{
-			Healthy: false,
-			Message: fmt.Sprintf("unexpected HTTP status: %d", resp.StatusCode),
-		}
-	}
-
-	var health elasticsearchClusterHealth
+	var health esClusterHealth
 	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
-		duration := time.Since(start).Seconds()
-		metrics.RecordProbe("elasticsearch", e.address, false, duration)
-		return Status{
-			Healthy: false,
-			Message: fmt.Sprintf("failed to decode response: %v", err),
+		return Result{
+			Healthy:  false,
+			Message:  fmt.Sprintf("failed to decode cluster health response: %v", err),
+			Duration: time.Since(start),
 		}
 	}
 
-	duration := time.Since(start).Seconds()
+	duration := time.Since(start)
 
-	if health.Status == "red" {
-		metrics.RecordProbe("elasticsearch", e.address, false, duration)
-		return Status{
-			Healthy: false,
-			Message: fmt.Sprintf("cluster status is red"),
+	switch health.Status {
+	case "green", "yellow":
+		return Result{
+			Healthy:  true,
+			Message:  fmt.Sprintf("elasticsearch cluster status: %s", health.Status),
+			Duration: duration,
 		}
-	}
-
-	metrics.RecordProbe("elasticsearch", e.address, true, duration)
-	return Status{
-		Healthy: true,
-		Message: fmt.Sprintf("cluster status: %s", health.Status),
+	default:
+		return Result{
+			Healthy:  false,
+			Message:  fmt.Sprintf("elasticsearch cluster status unhealthy: %s", health.Status),
+			Duration: duration,
+		}
 	}
 }
