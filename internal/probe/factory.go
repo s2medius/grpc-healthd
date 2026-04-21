@@ -6,18 +6,18 @@ import (
 	"github.com/yourorg/grpc-healthd/internal/config"
 )
 
-// FromConfig constructs a Prober from a ProbeConfig.
-func FromConfig(cfg config.ProbeConfig) (Prober, error) {
+// FromConfig constructs a Probe from a ProbeConfig.
+func FromConfig(cfg config.ProbeConfig) (Probe, error) {
 	switch cfg.Type {
 	case "tcp":
 		return NewTCPProbe(cfg.Address, cfg.Timeout), nil
-	case "http", "https":
+	case "http":
 		return NewHTTPProbe(cfg.Address, cfg.Timeout), nil
 	case "dns":
 		return NewDNSProbe(cfg.Address, cfg.Timeout), nil
 	case "exec":
 		if len(cfg.Command) == 0 {
-			return nil, fmt.Errorf("exec probe %q: command must not be empty", cfg.Name)
+			return nil, fmt.Errorf("exec probe %q: command is required", cfg.Name)
 		}
 		return NewExecProbe(cfg.Command[0], cfg.Command[1:], cfg.Timeout), nil
 	case "grpc":
@@ -34,6 +34,10 @@ func FromConfig(cfg config.ProbeConfig) (Prober, error) {
 		return NewMySQLProbe(cfg.Address, cfg.Timeout), nil
 	case "mongodb":
 		return NewMongoDBProbe(cfg.Address, cfg.Timeout), nil
+	case "kafka":
+		return NewKafkaProbe(cfg.Address, cfg.Timeout), nil
+	case "rabbitmq":
+		return NewRabbitMQProbe(cfg.Address, cfg.Timeout), nil
 	default:
 		return nil, fmt.Errorf("unknown probe type: %q", cfg.Type)
 	}
