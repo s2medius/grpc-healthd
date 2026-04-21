@@ -46,3 +46,12 @@ func (m *MetricsServer) Shutdown(ctx context.Context) error {
 func (m *MetricsServer) Addr() string {
 	return m.server.Addr
 }
+
+// ShutdownWithTimeout gracefully stops the metrics server using a deadline
+// derived from the provided timeout duration. It is a convenience wrapper
+// around Shutdown for callers that do not already hold a context.
+func (m *MetricsServer) ShutdownWithTimeout(timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return m.Shutdown(ctx)
+}
