@@ -1,52 +1,47 @@
 package config
 
-import "fmt"
-
-// ProbeType enumerates the supported probe kinds.
-type ProbeType string
-
-const (
-	ProbeTypeTCP      ProbeType = "tcp"
-	ProbeTypeHTTP     ProbeType = "http"
-	ProbeTypeDNS      ProbeType = "dns"
-	ProbeTypeExec     ProbeType = "exec"
-	ProbeTypeGRPC     ProbeType = "grpc"
-	ProbeTypeTLS      ProbeType = "tls"
-	ProbeTypeICMP     ProbeType = "icmp"
-	ProbeTypeRedis    ProbeType = "redis"
-	ProbeTypePostgres ProbeType = "postgres"
-	ProbeTypeMySQL    ProbeType = "mysql"
+import (
+	"fmt"
+	"time"
 )
 
-// ProbeConfig holds configuration for a single probe.
+// ProbeConfig holds the configuration for a single health probe.
 type ProbeConfig struct {
-	Name     string        `yaml:"name"`
-	Type     ProbeType     `yaml:"type"`
-	Address  string        `yaml:"address"`
-	Interval string        `yaml:"interval"`
-	Timeout  string        `yaml:"timeout"`
-	Command  []string      `yaml:"command,omitempty"`
+	Name    string        `yaml:"name"`
+	Type    string        `yaml:"type"`
+	Address string        `yaml:"address"`
+	Timeout time.Duration `yaml:"timeout"`
+	Command string        `yaml:"command"`
+	Args    []string      `yaml:"args"`
+	Interval time.Duration `yaml:"interval"`
 }
 
-// Validate returns an error if the ProbeConfig is missing required fields.
+// knownProbeTypes lists all supported probe type identifiers.
+var knownProbeTypes = map[string]struct{}{
+	"tcp": {}, "http": {}, "https": {}, "dns": {},
+	"exec": {}, "grpc": {}, "tls": {}, "icmp": {},
+	"redis": {}, "postgres": {}, "mysql": {}, "mongodb": {},
+	"kafka": {}, "rabbitmq": {}, "elasticsearch": {}, "etcd": {},
+	"nats": {}, "memcached": {}, "consul": {}, "amqp": {},
+	"smtp": {}, "http2": {}, "websocket": {}, "ftp": {},
+}
+
+// Validate checks that the ProbeConfig has all required fields.
 func (p ProbeConfig) Validate() error {
 	if p.Name == "" {
 		return fmt.Errorf("probe name is required")
 	}
-	switch p.Type {
-	case ProbeTypeTCP, ProbeTypeHTTP, ProbeTypeDNS, ProbeTypeGRPC,
-		ProbeTypeTLS, ProbeTypeICMP, ProbeTypeRedis, ProbeTypePostgres, ProbeTypeMySQL:
-		if p.Address == "" {
-			return fmt.Errorf("probe %q: address is required for type %q", p.Name, p.Type)
+	if _, ok := knownProbeTypes[p.Type]; !ok {
+		return fmt.Errorf("unknown probe type %q for probe %q", p.Type, p.Name)
+	}
+	if p.Type == "exec" {
+		if p.Command == "" {
+			return fmt.Errorf("probe %q: command is required for exec type", p.Name)
 		}
-	case ProbeTypeExec:
-		if len(p.Command) == 0 {
-			return fmt.Errorf("probe %q: command is required for type exec", p.Name)
-		}
-	case "":
-		return fmt.Errorf("probe %q: type is required", p.Name)
-	default:
-		return fmt.Errorf("probe %q: unknown type %q", p.Name, p.Type)
+		return nil
+	}
+	if p.Address == "" {
+		return fmt.Errorf("probe %q: address is required for type %q", p.Name, p.Type)
 	}
 	return nil
 }
