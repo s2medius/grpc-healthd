@@ -74,3 +74,47 @@ func TestScheduler_InvalidProbeSkipped(t *testing.T) {
 		t.Error("expected error for unregistered probe")
 	}
 }
+
+// TestScheduler_MultipleProbes verifies that the scheduler correctly tracks
+// status for multiple probes running concurrently.
+func TestScheduler_MultipleProbes(t *testing.T) {
+	ln1 := startTCPListener(t)
+	defer ln1.Close()
+	ln2 := startTCPListener(t)
+	defer ln2.Close()
+
+	probes := []config.ProbeConfig{
+		{
+			Name:     "svc-a",
+			Type:     "tcp",
+			Address:  ln1.Addr().String(),
+			Interval: 50 * time.Millisecond,
+			Timeout:  200 * time.Millisecond,
+		},
+		{
+			Name:     "svc-b",
+			Type:     "tcp",
+			Address:  ln2.Addr().String(),
+			Interval: 50 * time.Millisecond,
+			Timeout:  200 * time.Millisecond,
+		},
+	}
+
+	checker := NewChecker()
+	s := NewScheduler(checker, probes)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s.Start(ctx)
+	time.Sleep(200 * time.Millisecond)
+
+	for _, name := range []string{"svc-a", "svc-b"} {
+		result, err := checker.GetStatus(name)
+		if err != nil {
+			t.Fatalf("expected status for %s: %v", name, err)
+		}
+		if result.Status != probe.StatusHealthy {
+			t.Errorf("probe %s: expected healthy, got %s", name, result.Status)
+		}
+	}
+}
