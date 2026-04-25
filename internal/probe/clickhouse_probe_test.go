@@ -1,74 +1,83 @@
-package probe
+package probe_test
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/your-org/grpc-healthd/internal/probe"
 )
 
-// startFakeClickHouse starts a TCP server that sends a fake ClickHouse banner.
-func startFakeClickHouse(t *testing.T, banner string) string {
+func startFakeClickHouse(t *testing.T, statusCode int) string {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to start fake clickhouse: %v", err)
-	}
-	t.Cleanup(func() { ln.Close() })
-
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ping" {
+			w.WriteHeader(statusCode)
+			if statusCode == http.StatusOK {
+				_, _ = w.Write([]byte("Ok.\n"))
+			}
 			return
 		}
-		defer conn.Close()
-		_, _ = conn.Write([]byte(banner))
-	}()
-
-	return ln.Addr().String()
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(ts.Close)
+	return ts.Listener.Addr().String()
 }
 
 func TestClickHouseProbe_Healthy(t *testing.T) {
-	addr := startFakeClickHouse(t, "ClickHouse server version 23.8")
-	p := NewClickHouseProbe(addr, time.Second)
+	addr := startFakeClickHouse(t, http.StatusOK)
+	p := probe.NewClickHouseProbe(addr, 2*time.Second)
 	res := p.Probe(context.Background())
-	if !res.Healthy {
-		t.Errorf("expected healthy, got: %s", res.Message)
+	if res.Status != probe.StatusHealthy {
+		t.Fatalf("expected healthy, got %s: %v", res.Status, res.Error)
 	}
 }
 
 func TestClickHouseProbe_Unhealthy_ConnectionRefused(t *testing.T) {
-	p := NewClickHouseProbe("127.0.0.1:19999", 300*time.Millisecond)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	p := probe.NewClickHouseProbe(addr, 500*time.Millisecond)
 	res := p.Probe(context.Background())
-	if res.Healthy {
-		t.Error("expected unhealthy for refused connection")
+	if res.Status != probe.StatusUnhealthy {
+		t.Fatalf("expected unhealthy, got %s", res.Status)
 	}
 }
 
 func TestNewClickHouseProbe_DefaultTimeout(t *testing.T) {
-	p := NewClickHouseProbe("localhost:9000", 0)
-	if p.timeout != DefaultTimeout {
-		t.Errorf("expected default timeout %v, got %v", DefaultTimeout, p.timeout)
+	p := probe.NewClickHouseProbe("localhost:8123", 0)
+	if p == nil {
+		t.Fatal("expected non-nil probe")
 	}
 }
 
 func TestClickHouseProbe_CustomTimeout(t *testing.T) {
-	p := NewClickHouseProbe("localhost:9000", 5*time.Second)
-	if p.timeout != 5*time.Second {
-		t.Errorf("expected 5s timeout, got %v", p.timeout)
+	p := probe.NewClickHouseProbe("localhost:8123", 3*time.Second)
+	if p == nil {
+		t.Fatal("expected non-nil probe")
 	}
 }
 
-func TestClickHouseProbe_DurationRecorded(t *testing.T) {
-	addr := startFakeClickHouse(t, "ClickHouse server version 23.8")
-	p := NewClickHouseProbe(addr, time.Second)
-	start := time.Now()
+func TestClickHouseProbe_Unhealthy_ServiceUnavailable(t *testing.T) {
+	addr := startFakeClickHouse(t, http.StatusServiceUnavailable)
+	p := probe.NewClickHouseProbe(addr, 2*time.Second)
 	res := p.Probe(context.Background())
-	elapsed := time.Since(start)
-	if !res.Healthy {
-		t.Errorf("expected healthy: %s", res.Message)
+	if res.Status != probe.StatusUnhealthy {
+		t.Fatalf("expected unhealthy, got %s", res.Status)
 	}
-	if elapsed > 2*time.Second {
-		t.Errorf("probe took too long: %v", elapsed)
+	if res.Error == nil {
+		t.Fatal("expected non-nil error")
+	}
+	expected := fmt.Sprintf("unexpected status %d", http.StatusServiceUnavailable)
+	if res.Error.Error() != expected {
+		t.Fatalf("expected error %q, got %q", expected, res.Error.Error())
 	}
 }

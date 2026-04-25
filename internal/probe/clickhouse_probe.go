@@ -4,63 +4,64 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"time"
 
-	"github.com/yourorg/grpc-healthd/internal/metrics"
+	"github.com/your-org/grpc-healthd/internal/metrics"
 )
 
-// ClickHouseProbe checks connectivity to a ClickHouse server by performing
-// a native protocol handshake over TCP (port 9000 by default).
+// ClickHouseProbe checks ClickHouse HTTP interface availability.
 type ClickHouseProbe struct {
 	address string
 	timeout time.Duration
+	client  *http.Client
 }
 
-// NewClickHouseProbe creates a new ClickHouseProbe.
+// NewClickHouseProbe creates a new ClickHouseProbe targeting address (host:port).
 // If timeout is zero, DefaultTimeout is used.
 func NewClickHouseProbe(address string, timeout time.Duration) *ClickHouseProbe {
 	if timeout == 0 {
 		timeout = DefaultTimeout
 	}
-	return &ClickHouseProbe{address: address, timeout: timeout}
+	return &ClickHouseProbe{
+		address: address,
+		timeout: timeout,
+		client:  &http.Client{Timeout: timeout},
+	}
 }
 
-// Probe attempts to connect to the ClickHouse native TCP port and validates
-// that the server sends the expected "ClickHouse" greeting in the banner.
+// Probe performs the health check against the ClickHouse HTTP ping endpoint.
 func (p *ClickHouseProbe) Probe(ctx context.Context) Result {
 	start := time.Now()
 
-	dialer := &net.Dialer{}
-	ctxTimeout, cancel := context.WithTimeout(ctx, p.timeout)
-	defer cancel()
-
-	conn, err := dialer.DialContext(ctxTimeout, "tcp", p.address)
+	host, port, err := net.SplitHostPort(p.address)
 	if err != nil {
-		duration := time.Since(start).Seconds()
-		metrics.RecordProbe("clickhouse", p.address, false, duration)
-		return Result{Healthy: false, Message: fmt.Sprintf("connection failed: %v", err)}
+		dur := time.Since(start).Seconds()
+		metrics.RecordProbe("clickhouse", p.address, false, dur)
+		return Result{Status: StatusUnhealthy, Error: fmt.Errorf("invalid address %q: %w", p.address, err)}
 	}
-	defer conn.Close()
 
-	_ = conn.SetReadDeadline(time.Now().Add(p.timeout))
-
-	// ClickHouse native protocol: server sends a Hello packet upon connection.
-	// We read the first 9 bytes and check for the "ClickHouse" string.
-	buf := make([]byte, 64)
-	n, err := conn.Read(buf)
-	duration := time.Since(start).Seconds()
-
+	url := fmt.Sprintf("http://%s:%s/ping", host, port)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		metrics.RecordProbe("clickhouse", p.address, false, duration)
-		return Result{Healthy: false, Message: fmt.Sprintf("read failed: %v", err)}
+		dur := time.Since(start).Seconds()
+		metrics.RecordProbe("clickhouse", p.address, false, dur)
+		return Result{Status: StatusUnhealthy, Error: err}
 	}
 
-	banner := string(buf[:n])
-	if len(banner) == 0 {
-		metrics.RecordProbe("clickhouse", p.address, false, duration)
-		return Result{Healthy: false, Message: "empty response from server"}
+	resp, err := p.client.Do(req)
+	dur := time.Since(start).Seconds()
+	if err != nil {
+		metrics.RecordProbe("clickhouse", p.address, false, dur)
+		return Result{Status: StatusUnhealthy, Error: err}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		metrics.RecordProbe("clickhouse", p.address, false, dur)
+		return Result{Status: StatusUnhealthy, Error: fmt.Errorf("unexpected status %d", resp.StatusCode)}
 	}
 
-	metrics.RecordProbe("clickhouse", p.address, true, duration)
-	return Result{Healthy: true, Message: "clickhouse reachable"}
+	metrics.RecordProbe("clickhouse", p.address, true, dur)
+	return Result{Status: StatusHealthy}
 }
