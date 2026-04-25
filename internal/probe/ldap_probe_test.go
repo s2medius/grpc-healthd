@@ -65,4 +65,18 @@ func TestLDAPProbe_DurationRecorded(t *testing.T) {
 	if !res.Healthy {
 		t.Fatalf("expected healthy: %s", res.Message)
 	}
+	if res.Duration <= 0 {
+		t.Errorf("expected positive duration, got %v", res.Duration)
+	}
+}
+
+func TestLDAPProbe_Unhealthy_EmptyBanner(t *testing.T) {
+	// A server that closes the connection immediately without sending data
+	// should be treated as unhealthy.
+	addr := startFakeLDAP(t, []byte{})
+	p := NewLDAPProbe(addr, time.Second)
+	res := p.Probe(context.Background())
+	if res.Healthy {
+		t.Fatal("expected unhealthy for empty banner (connection closed immediately)")
+	}
 }
