@@ -39,3 +39,17 @@ func TestFromConfig_HTTP2_WithTimeout(t *testing.T) {
 		t.Fatal("expected non-nil probe")
 	}
 }
+
+func TestFromConfig_HTTP2_InvalidTimeout(t *testing.T) {
+	cfg := config.ProbeConfig{
+		Name:    "my-http2-service",
+		Type:    "http2",
+		Address: "http://localhost:8080/health",
+		Timeout: "not-a-duration",
+	}
+
+	_, err := probe.FromConfig(cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid timeout, got nil")
+	}
+}
