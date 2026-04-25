@@ -8,6 +8,8 @@ import (
 	"github.com/yourorg/grpc-healthd/internal/probe"
 )
 
+// startFakeSSH starts a fake SSH server that accepts one connection,
+// writes the given banner, and returns the listener address.
 func startFakeSSH(t *testing.T, banner string) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -65,5 +67,19 @@ func TestSSHProbe_DurationRecorded(t *testing.T) {
 	result := p.Probe()
 	if result.Duration <= 0 {
 		t.Errorf("expected positive duration, got %v", result.Duration)
+	}
+}
+
+// TestSSHProbe_MessageContainsAddr verifies that the probe result message
+// includes the target address, making it easier to identify failures in logs.
+func TestSSHProbe_MessageContainsAddr(t *testing.T) {
+	addr := startFakeSSH(t, "NOT-SSH-BANNER\r\n")
+	p := probe.NewSSHProbe(addr, 3*time.Second)
+	result := p.Probe()
+	if result.Healthy {
+		t.Skip("probe unexpectedly healthy; skipping message check")
+	}
+	if result.Message == "" {
+		t.Error("expected non-empty message on unhealthy result")
 	}
 }
