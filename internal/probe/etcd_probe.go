@@ -76,3 +76,13 @@ func (e *EtcdProbe) Probe() Result {
 		Duration: duration,
 	}
 }
+
+// Address returns the etcd address this probe is configured to check.
+func (e *EtcdProbe) Address() string {
+	return e.address
+}
+
+// Timeout returns the timeout duration configured for this probe.
+func (e *EtcdProbe) Timeout() time.Duration {
+	return e.timeout
+}
