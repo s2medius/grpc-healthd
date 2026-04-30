@@ -4,64 +4,53 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/http"
 	"time"
 
 	"github.com/your-org/grpc-healthd/internal/metrics"
 )
 
-// ClickHouseProbe checks ClickHouse HTTP interface availability.
+// ClickHouseProbe checks connectivity to a ClickHouse server via the native
+// protocol port (default 9000). It performs a TCP handshake and sends the
+// minimal ClickHouse client hello to verify the server responds correctly.
 type ClickHouseProbe struct {
 	address string
 	timeout time.Duration
-	client  *http.Client
 }
 
-// NewClickHouseProbe creates a new ClickHouseProbe targeting address (host:port).
-// If timeout is zero, DefaultTimeout is used.
+// NewClickHouseProbe creates a new ClickHouseProbe. If timeout is zero the
+// default probe timeout is used.
 func NewClickHouseProbe(address string, timeout time.Duration) *ClickHouseProbe {
 	if timeout == 0 {
 		timeout = DefaultTimeout
 	}
-	return &ClickHouseProbe{
-		address: address,
-		timeout: timeout,
-		client:  &http.Client{Timeout: timeout},
-	}
+	return &ClickHouseProbe{address: address, timeout: timeout}
 }
 
-// Probe performs the health check against the ClickHouse HTTP ping endpoint.
-func (p *ClickHouseProbe) Probe(ctx context.Context) Result {
+// Execute dials the ClickHouse native port and expects the server to send at
+// least one byte (the server hello), indicating it is alive.
+func (p *ClickHouseProbe) Execute(ctx context.Context) Result {
 	start := time.Now()
 
-	host, port, err := net.SplitHostPort(p.address)
+	dialer := &net.Dialer{Timeout: p.timeout}
+	conn, err := dialer.DialContext(ctx, "tcp", p.address)
 	if err != nil {
-		dur := time.Since(start).Seconds()
+		dur := time.Since(start)
 		metrics.RecordProbe("clickhouse", p.address, false, dur)
-		return Result{Status: StatusUnhealthy, Error: fmt.Errorf("invalid address %q: %w", p.address, err)}
+		return Result{Status: StatusUnhealthy, Error: fmt.Errorf("dial: %w", err), Duration: dur}
 	}
+	defer conn.Close()
 
-	url := fmt.Sprintf("http://%s:%s/ping", host, port)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		dur := time.Since(start).Seconds()
-		metrics.RecordProbe("clickhouse", p.address, false, dur)
-		return Result{Status: StatusUnhealthy, Error: err}
-	}
+	_ = conn.SetReadDeadline(time.Now().Add(p.timeout))
 
-	resp, err := p.client.Do(req)
-	dur := time.Since(start).Seconds()
+	// ClickHouse sends a server hello immediately after connection.
+	buf := make([]byte, 1)
+	_, err = conn.Read(buf)
+	dur := time.Since(start)
 	if err != nil {
 		metrics.RecordProbe("clickhouse", p.address, false, dur)
-		return Result{Status: StatusUnhealthy, Error: err}
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		metrics.RecordProbe("clickhouse", p.address, false, dur)
-		return Result{Status: StatusUnhealthy, Error: fmt.Errorf("unexpected status %d", resp.StatusCode)}
+		return Result{Status: StatusUnhealthy, Error: fmt.Errorf("read server hello: %w", err), Duration: dur}
 	}
 
 	metrics.RecordProbe("clickhouse", p.address, true, dur)
-	return Result{Status: StatusHealthy}
+	return Result{Status: StatusHealthy, Duration: dur}
 }

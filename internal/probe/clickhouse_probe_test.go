@@ -1,83 +1,85 @@
-package probe_test
+package probe
 
 import (
 	"context"
-	"fmt"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
-
-	"github.com/your-org/grpc-healthd/internal/probe"
 )
 
-func startFakeClickHouse(t *testing.T, statusCode int) string {
+// startFakeClickHouse starts a TCP listener that immediately writes one byte
+// (simulating the ClickHouse server hello) and returns the address.
+func startFakeClickHouse(t *testing.T, sendByte bool) string {
 	t.Helper()
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/ping" {
-			w.WriteHeader(statusCode)
-			if statusCode == http.StatusOK {
-				_, _ = w.Write([]byte("Ok.\n"))
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
 			}
-			return
+			go func(c net.Conn) {
+				defer c.Close()
+				if sendByte {
+					_, _ = c.Write([]byte{0x05}) // fake server hello byte
+				}
+			}(conn)
 		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	t.Cleanup(ts.Close)
-	return ts.Listener.Addr().String()
+	}()
+
+	return ln.Addr().String()
 }
 
 func TestClickHouseProbe_Healthy(t *testing.T) {
-	addr := startFakeClickHouse(t, http.StatusOK)
-	p := probe.NewClickHouseProbe(addr, 2*time.Second)
-	res := p.Probe(context.Background())
-	if res.Status != probe.StatusHealthy {
+	addr := startFakeClickHouse(t, true)
+	p := NewClickHouseProbe(addr, time.Second)
+	res := p.Execute(context.Background())
+	if res.Status != StatusHealthy {
 		t.Fatalf("expected healthy, got %s: %v", res.Status, res.Error)
 	}
 }
 
 func TestClickHouseProbe_Unhealthy_ConnectionRefused(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	ln.Close()
-
-	p := probe.NewClickHouseProbe(addr, 500*time.Millisecond)
-	res := p.Probe(context.Background())
-	if res.Status != probe.StatusUnhealthy {
+	p := NewClickHouseProbe("127.0.0.1:19999", 200*time.Millisecond)
+	res := p.Execute(context.Background())
+	if res.Status != StatusUnhealthy {
 		t.Fatalf("expected unhealthy, got %s", res.Status)
 	}
 }
 
 func TestNewClickHouseProbe_DefaultTimeout(t *testing.T) {
-	p := probe.NewClickHouseProbe("localhost:8123", 0)
-	if p == nil {
-		t.Fatal("expected non-nil probe")
+	p := NewClickHouseProbe("localhost:9000", 0)
+	if p.timeout != DefaultTimeout {
+		t.Fatalf("expected default timeout %v, got %v", DefaultTimeout, p.timeout)
 	}
 }
 
 func TestClickHouseProbe_CustomTimeout(t *testing.T) {
-	p := probe.NewClickHouseProbe("localhost:8123", 3*time.Second)
-	if p == nil {
-		t.Fatal("expected non-nil probe")
+	p := NewClickHouseProbe("localhost:9000", 3*time.Second)
+	if p.timeout != 3*time.Second {
+		t.Fatalf("expected 3s, got %v", p.timeout)
 	}
 }
 
-func TestClickHouseProbe_Unhealthy_ServiceUnavailable(t *testing.T) {
-	addr := startFakeClickHouse(t, http.StatusServiceUnavailable)
-	p := probe.NewClickHouseProbe(addr, 2*time.Second)
-	res := p.Probe(context.Background())
-	if res.Status != probe.StatusUnhealthy {
-		t.Fatalf("expected unhealthy, got %s", res.Status)
+func TestClickHouseProbe_Unhealthy_NoResponse(t *testing.T) {
+	addr := startFakeClickHouse(t, false) // connects but sends nothing
+	p := NewClickHouseProbe(addr, 200*time.Millisecond)
+	res := p.Execute(context.Background())
+	if res.Status != StatusUnhealthy {
+		t.Fatalf("expected unhealthy when no server hello, got %s", res.Status)
 	}
-	if res.Error == nil {
-		t.Fatal("expected non-nil error")
-	}
-	expected := fmt.Sprintf("unexpected status %d", http.StatusServiceUnavailable)
-	if res.Error.Error() != expected {
-		t.Fatalf("expected error %q, got %q", expected, res.Error.Error())
+}
+
+func TestClickHouseProbe_DurationRecorded(t *testing.T) {
+	addr := startFakeClickHouse(t, true)
+	p := NewClickHouseProbe(addr, time.Second)
+	res := p.Execute(context.Background())
+	if res.Duration <= 0 {
+		t.Fatalf("expected positive duration, got %v", res.Duration)
 	}
 }
